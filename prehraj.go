@@ -28,8 +28,17 @@ func searchPrehraj(query string) ([]PrehrajResult, error) {
 	if err != nil {
 		return nil, err
 	}
-	// Mimic browser User-Agent
-	req.Header.Set("User-Agent", "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
+	// Mimic full browser headers
+	req.Header.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
+	req.Header.Set("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8")
+	req.Header.Set("Accept-Language", "cs-CZ,cs;q=0.9,en;q=0.8")
+	req.Header.Set("Referer", "https://prehraj.to/")
+	req.Header.Set("Connection", "keep-alive")
+	req.Header.Set("Upgrade-Insecure-Requests", "1")
+	req.Header.Set("Sec-Fetch-Dest", "document")
+	req.Header.Set("Sec-Fetch-Mode", "navigate")
+	req.Header.Set("Sec-Fetch-Site", "same-origin")
+	req.Header.Set("Sec-Fetch-User", "?1")
 
 	resp, err := httpClient.Do(req)
 	if err != nil {
@@ -41,7 +50,13 @@ func searchPrehraj(query string) ([]PrehrajResult, error) {
 		return nil, fmt.Errorf("Prehraj.to returned status: %s", resp.Status)
 	}
 
-	doc, err := goquery.NewDocumentFromReader(resp.Body)
+	// Read body first to allow debugging if needed
+	bodyBytes, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, err
+	}
+	// Re-create reader for goquery
+	doc, err := goquery.NewDocumentFromReader(strings.NewReader(string(bodyBytes)))
 	if err != nil {
 		return nil, err
 	}
@@ -115,6 +130,15 @@ func searchPrehraj(query string) ([]PrehrajResult, error) {
 			URL:      href,
 		})
 	})
+
+	if len(results) == 0 {
+		fmt.Printf("DEBUG: No results found for query '%s'. Body len: %d\n", query, len(bodyBytes))
+		snippet := string(bodyBytes)
+		if len(snippet) > 500 {
+			snippet = snippet[:500]
+		}
+		fmt.Printf("DEBUG HTML Snippet: %s\n", snippet)
+	}
 
 	return results, nil
 }
