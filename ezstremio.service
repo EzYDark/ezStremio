@@ -1,0 +1,17 @@
+[Unit]
+Description=ezStremio Addon
+After=network.target
+
+[Service]
+# Replace 'root' with your actual username on VPS if different
+User=root
+# Adjust path to where you upload the binary
+WorkingDirectory=/opt/ezstremio
+ExecStart=/opt/ezstremio/ezstremio-linux-amd64
+Restart=always
+# Environment variables can be set here or in a .env file in WorkingDirectory
+# Environment="TMDB_API_KEY=your_key_here"
+# Environment="PORT=8080"
+
+[Install]
+WantedBy=multi-user.target

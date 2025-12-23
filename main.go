@@ -257,9 +257,14 @@ func main() {
 	http.HandleFunc("/meta/", handleMeta)
 	http.HandleFunc("/stream/", handleStream)
 
-	port := ":8080"
-	log.Printf("Addon active on http://localhost%s/manifest.json", port)
-	if err := http.ListenAndServe(port, nil); err != nil {
+	port := os.Getenv("PORT")
+	if port == "" {
+		port = "8080"
+	}
+
+	addr := ":" + port
+	log.Printf("Addon active on http://localhost%s/manifest.json", addr)
+	if err := http.ListenAndServe(addr, nil); err != nil {
 		log.Fatal(err)
 	}
 }
