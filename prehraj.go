@@ -72,66 +72,99 @@ func searchPrehraj(query string) ([]PrehrajResult, error) {
 		if !exists {
 			return
 		}
-
-		text := s.Text()
-		// Clean up text
-		text = strings.ReplaceAll(text, "\n", " ")
-		fields := strings.Fields(text)
-
-		duration := ""
-		size := ""
-
-		// Heuristic to split fields
-		for _, f := range fields {
-			if strings.Contains(f, ":") && len(f) < 9 { // e.g. 1:30:00 or 09:00
-				duration = f
-			} else if strings.Contains(f, "MB") || strings.Contains(f, "GB") || strings.Contains(f, "kB") {
-				size = f
-			}
-		}
-
-		fullText := s.Text()
-		lines := strings.Split(fullText, "\n")
-
-		cleanedTitle := ""
-		for _, line := range lines {
-			line = strings.TrimSpace(line)
-			if line == "" {
-				continue
-			}
-			if strings.Contains(line, ":") && len(line) < 10 {
-				duration = line
-			} else if strings.Contains(line, "MB") || strings.Contains(line, "GB") || strings.Contains(line, "kB") {
-				size = line
-			} else {
-				cleanedTitle = line // Assume the last non-meta line is title
-			}
-		}
-
-		if !strings.HasPrefix(href, "http") {
-			href = "https://prehraj.to" + href
-		}
-
-		results = append(results, PrehrajResult{
-			Title:    cleanedTitle,
-			Duration: duration,
-			Size:     size,
-			URL:      href,
-		})
+		parseLink(s, href, &results)
 	})
+
+	// Fallback: If no results found, try generic parsing of all links
+	if len(results) == 0 {
+		fmt.Println("DEBUG: Specific selector failed, trying generic fallback...")
+		doc.Find("a").Each(func(i int, s *goquery.Selection) {
+			href, exists := s.Attr("href")
+			if !exists {
+				return
+			}
+			// Avoid re-parsing if we somehow matched (though results is 0 here)
+			// Check if it looks like a video link
+			// Prehraj links usually don't have "hledej" or "profil" in them, but are root relative e.g. /video-title/id
+			if strings.HasPrefix(href, "/hledej") || strings.HasPrefix(href, "/profil") || strings.HasPrefix(href, "/cenik") {
+				return
+			}
+
+			// Must contain size and duration in text to be valid
+			text := s.Text()
+			if (strings.Contains(text, "MB") || strings.Contains(text, "GB")) && strings.Contains(text, ":") {
+				parseLink(s, href, &results)
+			}
+		})
+	}
 
 	if len(results) == 0 {
 		pageTitle := doc.Find("title").Text()
 		fmt.Printf("DEBUG: No results found for query '%s'. Page Title: '%s'. Body len: %d\n", query, pageTitle, len(bodyBytes))
 
 		snippet := string(bodyBytes)
-		if len(snippet) > 1000 {
-			snippet = snippet[:1000]
+		if len(snippet) > 20000 {
+			snippet = snippet[:20000]
 		}
 		fmt.Printf("DEBUG HTML Snippet: %s\n", snippet)
 	}
 
 	return results, nil
+}
+
+func parseLink(s *goquery.Selection, href string, results *[]PrehrajResult) {
+	duration := ""
+	size := ""
+	cleanedTitle := ""
+
+	fullText := s.Text()
+	lines := strings.Split(fullText, "\n")
+
+	for _, line := range lines {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+		// Duration check: simple check for colon and length
+		if strings.Contains(line, ":") && len(line) < 10 {
+			duration = line
+		} else if strings.Contains(line, "MB") || strings.Contains(line, "GB") || strings.Contains(line, "kB") {
+			size = line
+		} else {
+			cleanedTitle = line // Assume the last non-meta line is title
+		}
+	}
+
+	// Basic Validation
+	if cleanedTitle == "" {
+		// Try looking for a nested h3 or similar if text was empty?
+		// But usually text works.
+		// If generic fallback, title might be the whole text if lines didn't split well.
+		if size != "" || duration != "" {
+			// If we found meta but no "Title" line, maybe the Title IS the text but we consumed it?
+			// Let's reconstruct.
+			// Actually, let's just use the title attribute if available
+			if val, ok := s.Attr("title"); ok {
+				cleanedTitle = val
+			} else {
+				cleanedTitle = strings.TrimSpace(fullText) // Fallback
+			}
+		}
+	}
+
+	if cleanedTitle != "" {
+		if !strings.HasPrefix(href, "http") {
+			href = "https://prehraj.to" + href
+		}
+
+		// Check duplicates?
+		*results = append(*results, PrehrajResult{
+			Title:    cleanedTitle,
+			Duration: duration,
+			Size:     size,
+			URL:      href,
+		})
+	}
 }
 
 func extractPrehrajStreams(videoPageURL string) ([]Stream, error) {
