@@ -10,6 +10,8 @@ import (
 	"strings"
 	"time"
 
+	"os"
+
 	"github.com/PuerkitoBio/goquery"
 	"github.com/go-rod/rod"
 	"github.com/go-rod/rod/lib/launcher"
@@ -34,21 +36,104 @@ func searchPrehraj(query string) ([]PrehrajResult, error) {
 	browser := rod.New().ControlURL(u).MustConnect()
 	defer browser.MustClose()
 
-	page := browser.MustPage(searchURL)
+	// 1. LOGIN FLOW (If credentials provided)
+	email := os.Getenv("PREHRAJ_EMAIL")
+	password := os.Getenv("PREHRAJ_PASSWORD")
+
+	page := browser.MustPage("https://prehraj.to/")
 
 	// Set User-Agent
 	page.MustSetUserAgent(&proto.NetworkSetUserAgentOverride{
 		UserAgent: "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36",
 	})
-	// Navigate and wait for load
-	// We wait for the "body" to be present, or specifically ".video--link" if possible
-	err := page.Navigate(searchURL)
-	if err != nil {
-		return nil, err
+
+	page.MustWaitLoad()
+
+	if email != "" && password != "" {
+
+		fmt.Println("DEBUG: Attempting to login...")
+
+		time.Sleep(2 * time.Second)
+
+		// Strategy 1: Check for Inline Login Form (often on Homepage Desktop)
+
+		// Form ID: #frm-homepageLoginForm-loginForm
+
+		inlineForm, err := page.Element("#frm-homepageLoginForm-loginForm")
+
+		if err == nil {
+
+			fmt.Println("DEBUG: Found inline login form.")
+
+			// Fill inline form
+
+			// We use the ID selectors which are usually specific: #frm-homepageLoginForm-loginForm-email
+
+			// But using hierarchical selector is safer if IDs are dynamic, though Nette IDs are usually stable.
+
+			// Let's use the Form element to find inputs.
+
+			inlineForm.MustElement(`input[name="email"]`).MustInput(email)
+
+			inlineForm.MustElement(`input[name="password"]`).MustInput(password)
+
+			inlineForm.MustElement(`button[name="login"]`).MustClick()
+
+			page.MustWaitLoad()
+
+			time.Sleep(2 * time.Second)
+
+			fmt.Println("DEBUG: Login submitted via inline form.")
+
+		} else {
+
+			// Strategy 2: Click Login Button to open Modal
+
+			fmt.Println("DEBUG: Inline form not found, trying modal...")
+
+			loginBtn, err := page.Element(`[data-dialog-open="login"]`)
+
+			if err == nil {
+
+				loginBtn.MustClick()
+
+				// Wait for modal form
+
+				err := page.Timeout(5*time.Second).WaitElementsMoreThan("#frm-loginDialog-login-loginForm", 0)
+
+				if err != nil {
+
+					fmt.Printf("DEBUG: Login form did not appear: %v\n", err)
+
+				} else {
+
+					page.MustElement(`#frm-loginDialog-login-loginForm input[name="email"]`).MustInput(email)
+
+					page.MustElement(`#frm-loginDialog-login-loginForm input[name="password"]`).MustInput(password)
+
+					page.MustElement(`#frm-loginDialog-login-loginForm button[name="login"]`).MustClick()
+
+					page.MustWaitLoad()
+
+					time.Sleep(2 * time.Second)
+
+					fmt.Println("DEBUG: Login submitted via modal.")
+
+				}
+
+			} else {
+
+				fmt.Println("DEBUG: Login button not found (maybe already logged in or mobile layout different).")
+
+			}
+
+		}
+
 	}
 
-	// Wait a bit for JS to execute (simple wait, or wait for selector)
-	// Waiting for ".video--link" might timeout if 0 results, so just wait for load event
+	// 2. SEARCH
+	fmt.Printf("DEBUG: Navigating to search: %s\n", searchURL)
+	page.MustNavigate(searchURL)
 	page.MustWaitLoad()
 
 	// Additional small sleep to let any lazy loading finish
