@@ -1,8 +1,7 @@
-# Replace with your actual domain or public IP
-your-domain.com {
-    reverse_proxy localhost:8080
+{
+    email {$ACME_EMAIL}
 }
 
-# If you only have an IP and no domain, Caddy attempts to issue a cert for IP if public,
-# or you can run in HTTP mode for testing (not recommended for Stremio production).
-# Stremio REQUIRES HTTPS.
+{$DOMAIN_NAME} {
+    reverse_proxy ezstremio:8080
+}
