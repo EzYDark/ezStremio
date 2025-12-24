@@ -30,7 +30,7 @@ func searchPrehraj(query string) ([]PrehrajResult, error) {
 
 	// Launch headless browser
 	// We use a custom launcher to ensure it finds chromium in Alpine
-	u := launcher.New().MustLaunch()
+	u := launcher.New().Bin("/usr/bin/chromium-browser").MustLaunch()
 	browser := rod.New().ControlURL(u).MustConnect()
 	defer browser.MustClose()
 
