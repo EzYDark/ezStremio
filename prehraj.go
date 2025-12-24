@@ -37,85 +37,119 @@ func searchPrehraj(query string) ([]PrehrajResult, error) {
 	defer browser.MustClose()
 
 	// 1. LOGIN FLOW (If credentials provided)
+
 	email := os.Getenv("PREHRAJ_EMAIL")
+
 	password := os.Getenv("PREHRAJ_PASSWORD")
 
 	page := browser.MustPage("https://prehraj.to/")
 
 	// Set User-Agent
+
 	page.MustSetUserAgent(&proto.NetworkSetUserAgentOverride{
+
 		UserAgent: "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36",
 	})
 
-	page.MustWaitLoad()
+	// Wait for load with timeout
+
+	err := page.Timeout(15 * time.Second).WaitLoad()
+
+	if err != nil {
+
+		fmt.Printf("DEBUG: Initial page load timeout: %v\n", err)
+
+	}
 
 	if email != "" && password != "" {
 
 		fmt.Println("DEBUG: Attempting to login...")
 
+		// Wait for page to be ready
+
 		time.Sleep(2 * time.Second)
 
-		// Strategy 1: Check for Inline Login Form (often on Homepage Desktop)
+		// Strategy 1: Check for Inline Login Form
 
-		// Form ID: #frm-homepageLoginForm-loginForm
+		// Use Race to check for multiple possible login indicators
 
-		inlineForm, err := page.Element("#frm-homepageLoginForm-loginForm")
+		// We want to avoid waiting if elements aren't there
+
+		// Attempt to find inline form with timeout
+
+		inlineForm, err := page.Timeout(2 * time.Second).Element("#frm-homepageLoginForm-loginForm")
 
 		if err == nil {
 
-			fmt.Println("DEBUG: Found inline login form.")
+			fmt.Println("DEBUG: Found inline login form. Filling...")
 
 			// Fill inline form
 
-			// We use the ID selectors which are usually specific: #frm-homepageLoginForm-loginForm-email
+			if err := inlineForm.MustElement(`input[name="email"]`).Input(email); err != nil {
 
-			// But using hierarchical selector is safer if IDs are dynamic, though Nette IDs are usually stable.
+				fmt.Printf("DEBUG: Error filling email: %v\n", err)
 
-			// Let's use the Form element to find inputs.
+			}
 
-			inlineForm.MustElement(`input[name="email"]`).MustInput(email)
+			inlineForm.MustElement(`input[name="password"]`).Input(password)
 
-			inlineForm.MustElement(`input[name="password"]`).MustInput(password)
+			// Click submit and wait
 
-			inlineForm.MustElement(`button[name="login"]`).MustClick()
+			go func() {
 
-			page.MustWaitLoad()
+				// Click might cause navigation, so we handle it gracefully
 
-			time.Sleep(2 * time.Second)
+				inlineForm.MustElement(`button[name="login"]`).Click(proto.InputMouseButtonLeft, 1)
+
+			}()
+
+			// Wait for navigation or stable
+
+			page.Timeout(10 * time.Second).WaitLoad()
 
 			fmt.Println("DEBUG: Login submitted via inline form.")
 
 		} else {
 
-			// Strategy 2: Click Login Button to open Modal
+			// Strategy 2: Modal
 
-			fmt.Println("DEBUG: Inline form not found, trying modal...")
+			fmt.Println("DEBUG: Inline form not found, checking for login button...")
 
-			loginBtn, err := page.Element(`[data-dialog-open="login"]`)
+			loginBtn, err := page.Timeout(2 * time.Second).Element(`[data-dialog-open="login"]`)
 
 			if err == nil {
+
+				fmt.Println("DEBUG: Login button found. Clicking...")
 
 				loginBtn.MustClick()
 
 				// Wait for modal form
 
+				fmt.Println("DEBUG: Waiting for modal form...")
+
 				err := page.Timeout(5*time.Second).WaitElementsMoreThan("#frm-loginDialog-login-loginForm", 0)
 
 				if err != nil {
 
-					fmt.Printf("DEBUG: Login form did not appear: %v\n", err)
+					fmt.Printf("DEBUG: Login modal did not appear: %v\n", err)
 
 				} else {
 
-					page.MustElement(`#frm-loginDialog-login-loginForm input[name="email"]`).MustInput(email)
+					fmt.Println("DEBUG: Modal appeared. Filling...")
 
-					page.MustElement(`#frm-loginDialog-login-loginForm input[name="password"]`).MustInput(password)
+					page.MustElement(`#frm-loginDialog-login-loginForm input[name="email"]`).Input(email)
+
+					page.MustElement(`#frm-loginDialog-login-loginForm input[name="password"]`).Input(password)
+
+					fmt.Println("DEBUG: Submitting modal form...")
+
+					// Click and wait
+
+					wait := page.MustWaitNavigation()
 
 					page.MustElement(`#frm-loginDialog-login-loginForm button[name="login"]`).MustClick()
 
-					page.MustWaitLoad()
-
-					time.Sleep(2 * time.Second)
+					wait()
 
 					fmt.Println("DEBUG: Login submitted via modal.")
 
@@ -123,7 +157,7 @@ func searchPrehraj(query string) ([]PrehrajResult, error) {
 
 			} else {
 
-				fmt.Println("DEBUG: Login button not found (maybe already logged in or mobile layout different).")
+				fmt.Println("DEBUG: Login button not found. Assuming already logged in or layout changed.")
 
 			}
 
@@ -132,9 +166,12 @@ func searchPrehraj(query string) ([]PrehrajResult, error) {
 	}
 
 	// 2. SEARCH
+
 	fmt.Printf("DEBUG: Navigating to search: %s\n", searchURL)
+
 	page.MustNavigate(searchURL)
-	page.MustWaitLoad()
+
+	page.Timeout(15 * time.Second).WaitLoad()
 
 	// Additional small sleep to let any lazy loading finish
 	time.Sleep(2 * time.Second)

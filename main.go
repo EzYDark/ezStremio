@@ -792,9 +792,9 @@ func handleStream(w http.ResponseWriter, r *http.Request) {
 
 	var wgSearch sync.WaitGroup
 
-	// Search concurrency limit to avoid being blocked
-
-	sem := make(chan struct{}, 3)
+	// Search concurrency limit to avoid being blocked and save resources
+	// When using Headless Chrome, we must limit this to 1 to prevent spawning multiple browsers
+	sem := make(chan struct{}, 1)
 
 	for _, q := range dedupedQueries {
 
