@@ -8,8 +8,12 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/PuerkitoBio/goquery"
+	"github.com/go-rod/rod"
+	"github.com/go-rod/rod/lib/launcher"
+	"github.com/go-rod/rod/lib/proto"
 )
 
 // PrehrajResult represents a search result from Prehraj.to
@@ -20,46 +24,44 @@ type PrehrajResult struct {
 	URL      string
 }
 
-// searchPrehraj searches Prehraj.to for a query
+// searchPrehraj searches Prehraj.to for a query using Headless Browser (Rod)
 func searchPrehraj(query string) ([]PrehrajResult, error) {
 	searchURL := fmt.Sprintf("https://prehraj.to/hledej/%s", url.PathEscape(query))
 
-	req, err := http.NewRequest("GET", searchURL, nil)
+	// Launch headless browser
+	// We use a custom launcher to ensure it finds chromium in Alpine
+	u := launcher.New().MustLaunch()
+	browser := rod.New().ControlURL(u).MustConnect()
+	defer browser.MustClose()
+
+	page := browser.MustPage(searchURL)
+
+	// Set User-Agent
+	page.MustSetUserAgent(&proto.NetworkSetUserAgentOverride{
+		UserAgent: "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36",
+	})
+	// Navigate and wait for load
+	// We wait for the "body" to be present, or specifically ".video--link" if possible
+	err := page.Navigate(searchURL)
 	if err != nil {
 		return nil, err
 	}
-	// Mimic full browser headers
-	req.Header.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36")
-	req.Header.Set("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7")
-	req.Header.Set("Accept-Language", "cs-CZ,cs;q=0.9,en-US;q=0.8,en;q=0.7")
-	req.Header.Set("Referer", "https://prehraj.to/")
-	req.Header.Set("Connection", "keep-alive")
-	req.Header.Set("Upgrade-Insecure-Requests", "1")
-	req.Header.Set("Sec-Ch-Ua", `"Google Chrome";v="123", "Not:A-Brand";v="8", "Chromium";v="123"`)
-	req.Header.Set("Sec-Ch-Ua-Mobile", "?0")
-	req.Header.Set("Sec-Ch-Ua-Platform", `"Windows"`)
-	req.Header.Set("Sec-Fetch-Dest", "document")
-	req.Header.Set("Sec-Fetch-Mode", "navigate")
-	req.Header.Set("Sec-Fetch-Site", "same-origin")
-	req.Header.Set("Sec-Fetch-User", "?1")
 
-	resp, err := httpClient.Do(req)
+	// Wait a bit for JS to execute (simple wait, or wait for selector)
+	// Waiting for ".video--link" might timeout if 0 results, so just wait for load event
+	page.MustWaitLoad()
+
+	// Additional small sleep to let any lazy loading finish
+	time.Sleep(2 * time.Second)
+
+	// Get HTML
+	html, err := page.HTML()
 	if err != nil {
 		return nil, err
 	}
-	defer resp.Body.Close()
 
-	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("Prehraj.to returned status: %s", resp.Status)
-	}
-
-	// Read body first to allow debugging if needed
-	bodyBytes, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return nil, err
-	}
-	// Re-create reader for goquery
-	doc, err := goquery.NewDocumentFromReader(strings.NewReader(string(bodyBytes)))
+	// Parse with GoQuery as before
+	doc, err := goquery.NewDocumentFromReader(strings.NewReader(html))
 	if err != nil {
 		return nil, err
 	}
@@ -83,9 +85,7 @@ func searchPrehraj(query string) ([]PrehrajResult, error) {
 			if !exists {
 				return
 			}
-			// Avoid re-parsing if we somehow matched (though results is 0 here)
-			// Check if it looks like a video link
-			// Prehraj links usually don't have "hledej" or "profil" in them, but are root relative e.g. /video-title/id
+			// Avoid re-parsing if we somehow matched
 			if strings.HasPrefix(href, "/hledej") || strings.HasPrefix(href, "/profil") || strings.HasPrefix(href, "/cenik") {
 				return
 			}
@@ -100,9 +100,10 @@ func searchPrehraj(query string) ([]PrehrajResult, error) {
 
 	if len(results) == 0 {
 		pageTitle := doc.Find("title").Text()
-		fmt.Printf("DEBUG: No results found for query '%s'. Page Title: '%s'. Body len: %d\n", query, pageTitle, len(bodyBytes))
+		fmt.Printf("DEBUG: No results found for query '%s'. Page Title: '%s'. Body len: %d\n", query, pageTitle, len(html))
 
-		snippet := string(bodyBytes)
+		// Debug snippet
+		snippet := html
 		if len(snippet) > 20000 {
 			snippet = snippet[:20000]
 		}

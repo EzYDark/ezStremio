@@ -23,8 +23,8 @@ FROM alpine:latest
 
 WORKDIR /app
 
-# Install CA certificates for HTTPS requests
-RUN apk --no-cache add ca-certificates
+# Install CA certificates for HTTPS requests and Chromium for scraping
+RUN apk --no-cache add ca-certificates chromium
 
 # Copy binary from builder
 COPY --from=builder /app/ezstremio .
