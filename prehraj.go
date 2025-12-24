@@ -2,13 +2,15 @@ package main
 
 import (
 	"fmt"
+	"io"
+	"net/http"
+	"net/http/cookiejar"
 	"net/url"
+	"os"
 	"regexp"
 	"strconv"
 	"strings"
 	"time"
-
-	"os"
 
 	"github.com/PuerkitoBio/goquery"
 	"github.com/go-rod/rod"
@@ -16,20 +18,12 @@ import (
 	"github.com/go-rod/rod/lib/proto"
 )
 
-var rodBrowser *rod.Browser
+var prehrajClient *http.Client
 
 func InitBrowser() {
-	if rodBrowser != nil {
+	if prehrajClient != nil {
 		return
 	}
-	// Launch headless browser
-	path := "/usr/bin/chromium-browser"
-	if _, err := os.Stat(path); os.IsNotExist(err) {
-		path, _ = launcher.LookPath()
-	}
-
-	u := launcher.New().Bin(path).MustLaunch()
-	rodBrowser = rod.New().ControlURL(u).MustConnect()
 
 	// Global Login
 	email := os.Getenv("PREHRAJ_EMAIL")
@@ -37,8 +31,18 @@ func InitBrowser() {
 
 	if email != "" && password != "" {
 		fmt.Println("DEBUG: Performing global login...")
-		page := rodBrowser.MustPage("https://prehraj.to/")
-		defer page.Close()
+
+		// Launch headless browser for login only
+		path := "/usr/bin/chromium-browser"
+		if _, err := os.Stat(path); os.IsNotExist(err) {
+			path, _ = launcher.LookPath()
+		}
+
+		u := launcher.New().Bin(path).MustLaunch()
+		browser := rod.New().ControlURL(u).MustConnect()
+		defer browser.MustClose()
+
+		page := browser.MustPage("https://prehraj.to/")
 
 		page.MustSetUserAgent(&proto.NetworkSetUserAgentOverride{
 			UserAgent: "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36",
@@ -51,6 +55,7 @@ func InitBrowser() {
 		time.Sleep(2 * time.Second)
 
 		// Login Logic
+		loggedIn := false
 		inlineForm, err := page.Timeout(2 * time.Second).Element("#frm-homepageLoginForm-loginForm")
 		if err == nil {
 			fmt.Println("DEBUG: Found inline login form. Filling...")
@@ -61,6 +66,7 @@ func InitBrowser() {
 			}()
 			page.Timeout(10 * time.Second).WaitLoad()
 			fmt.Println("DEBUG: Login submitted via inline form.")
+			loggedIn = true
 		} else {
 			fmt.Println("DEBUG: Inline form not found, checking for login button...")
 			loginBtn, err := page.Timeout(2 * time.Second).Element(`[data-dialog-open="login"]`)
@@ -79,12 +85,54 @@ func InitBrowser() {
 					page.MustElement(`#frm-loginDialog-login-loginForm button[name="login"]`).MustClick()
 					wait()
 					fmt.Println("DEBUG: Login submitted via modal.")
+					loggedIn = true
 				}
 			} else {
 				fmt.Println("DEBUG: Login button not found. Assuming already logged in or layout changed.")
 			}
 		}
+
+		if loggedIn {
+			// Extract cookies
+			cookies, err := page.Cookies(nil)
+			if err != nil {
+				fmt.Printf("DEBUG: Failed to get cookies: %v\n", err)
+			} else {
+				jar, _ := cookiejar.New(nil)
+				u, _ := url.Parse("https://prehraj.to")
+				jar.SetCookies(u, convertRodCookies(cookies))
+				prehrajClient = &http.Client{
+					Jar:     jar,
+					Timeout: 30 * time.Second,
+				}
+				fmt.Println("DEBUG: Cookies extracted and HTTP client initialized.")
+			}
+		}
 	}
+
+	// Fallback if login failed or not configured
+	if prehrajClient == nil {
+		fmt.Println("DEBUG: Initializing HTTP client without login.")
+		jar, _ := cookiejar.New(nil)
+		prehrajClient = &http.Client{
+			Jar:     jar,
+			Timeout: 30 * time.Second,
+		}
+	}
+}
+
+func convertRodCookies(rodCookies []*proto.NetworkCookie) []*http.Cookie {
+	var cookies []*http.Cookie
+	for _, c := range rodCookies {
+		cookies = append(cookies, &http.Cookie{
+			Name:   c.Name,
+			Value:  c.Value,
+			Domain: c.Domain,
+			Path:   c.Path,
+			Secure: c.Secure,
+		})
+	}
+	return cookies
 }
 
 // PrehrajResult represents a search result from Prehraj.to
@@ -95,38 +143,35 @@ type PrehrajResult struct {
 	URL      string
 }
 
-// searchPrehraj searches Prehraj.to for a query using Headless Browser (Rod)
+// searchPrehraj searches Prehraj.to using the persistent HTTP client
 func searchPrehraj(query string) ([]PrehrajResult, error) {
 	searchURL := fmt.Sprintf("https://prehraj.to/hledej/%s", url.PathEscape(query))
 
-	if rodBrowser == nil {
+	if prehrajClient == nil {
 		InitBrowser()
 	}
 
-	page := rodBrowser.MustPage(searchURL)
-	defer page.Close()
-
-	// Set User-Agent
-	page.MustSetUserAgent(&proto.NetworkSetUserAgentOverride{
-		UserAgent: "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36",
-	})
-
-	// 2. SEARCH
 	fmt.Printf("DEBUG: Navigating to search: %s\n", searchURL)
-	// Page already navigated by MustPage, but checking load
-	page.Timeout(15 * time.Second).WaitLoad()
 
-	// Additional small sleep to let any lazy loading finish
-	time.Sleep(2 * time.Second)
-
-	// Get HTML
-	html, err := page.HTML()
+	req, err := http.NewRequest("GET", searchURL, nil)
 	if err != nil {
 		return nil, err
 	}
+	// Mimic browser User-Agent
+	req.Header.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36")
 
-	// Parse with GoQuery as before
-	doc, err := goquery.NewDocumentFromReader(strings.NewReader(html))
+	resp, err := prehrajClient.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("search returned status: %s", resp.Status)
+	}
+
+	// Parse with GoQuery
+	doc, err := goquery.NewDocumentFromReader(resp.Body)
 	if err != nil {
 		return nil, err
 	}
@@ -165,7 +210,7 @@ func searchPrehraj(query string) ([]PrehrajResult, error) {
 
 	if len(results) == 0 {
 		pageTitle := doc.Find("title").Text()
-		fmt.Printf("DEBUG: No results found for query '%s'. Page Title: '%s'. Body len: %d\n", query, pageTitle, len(html))
+		fmt.Printf("DEBUG: No results found for query '%s'. Page Title: '%s'.\n", query, pageTitle)
 	}
 
 	return results, nil
@@ -196,13 +241,7 @@ func parseLink(s *goquery.Selection, href string, results *[]PrehrajResult) {
 
 	// Basic Validation
 	if cleanedTitle == "" {
-		// Try looking for a nested h3 or similar if text was empty?
-		// But usually text works.
-		// If generic fallback, title might be the whole text if lines didn't split well.
 		if size != "" || duration != "" {
-			// If we found meta but no "Title" line, maybe the Title IS the text but we consumed it?
-			// Let's reconstruct.
-			// Actually, let's just use the title attribute if available
 			if val, ok := s.Attr("title"); ok {
 				cleanedTitle = val
 			} else {
@@ -216,7 +255,6 @@ func parseLink(s *goquery.Selection, href string, results *[]PrehrajResult) {
 			href = "https://prehraj.to" + href
 		}
 
-		// Check duplicates?
 		*results = append(*results, PrehrajResult{
 			Title:    cleanedTitle,
 			Duration: duration,
@@ -227,31 +265,34 @@ func parseLink(s *goquery.Selection, href string, results *[]PrehrajResult) {
 }
 
 func extractPrehrajStreams(videoPageURL string) ([]Stream, error) {
-	if rodBrowser == nil {
+	if prehrajClient == nil {
 		InitBrowser()
 	}
 
-	page := rodBrowser.MustPage(videoPageURL)
-	defer page.Close()
-
-	page.MustSetUserAgent(&proto.NetworkSetUserAgentOverride{
-		UserAgent: "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36",
-	})
-
-	if err := page.Timeout(15 * time.Second).WaitLoad(); err != nil {
-		fmt.Printf("DEBUG: Timeout loading video page %s: %v\n", videoPageURL, err)
-	}
-
-	// Small delay to ensure scripts run
-	time.Sleep(1 * time.Second)
-
-	bodyString, err := page.HTML()
+	req, err := http.NewRequest("GET", videoPageURL, nil)
 	if err != nil {
 		return nil, err
 	}
+	req.Header.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36")
+
+	resp, err := prehrajClient.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("Prehraj.to details returned status: %s", resp.Status)
+	}
+
+	bodyBytes, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, err
+	}
+	bodyString := string(bodyBytes)
 
 	// Regex to find "var sources = [...]"
-	re := regexp.MustCompile(`var sources = (\[[\s\S]*?\]);`)
+	re := regexp.MustCompile(`var sources = ([\s\S]*?]);`)
 	matches := re.FindStringSubmatch(bodyString)
 
 	// Parse HTML for "Rozlišení"
