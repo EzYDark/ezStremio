@@ -2,8 +2,6 @@ package main
 
 import (
 	"fmt"
-	"io"
-	"net/http"
 	"net/url"
 	"regexp"
 	"strconv"
@@ -18,6 +16,77 @@ import (
 	"github.com/go-rod/rod/lib/proto"
 )
 
+var rodBrowser *rod.Browser
+
+func InitBrowser() {
+	if rodBrowser != nil {
+		return
+	}
+	// Launch headless browser
+	path := "/usr/bin/chromium-browser"
+	if _, err := os.Stat(path); os.IsNotExist(err) {
+		path, _ = launcher.LookPath()
+	}
+
+	u := launcher.New().Bin(path).MustLaunch()
+	rodBrowser = rod.New().ControlURL(u).MustConnect()
+
+	// Global Login
+	email := os.Getenv("PREHRAJ_EMAIL")
+	password := os.Getenv("PREHRAJ_PASSWORD")
+
+	if email != "" && password != "" {
+		fmt.Println("DEBUG: Performing global login...")
+		page := rodBrowser.MustPage("https://prehraj.to/")
+		defer page.Close()
+
+		page.MustSetUserAgent(&proto.NetworkSetUserAgentOverride{
+			UserAgent: "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36",
+		})
+
+		if err := page.Timeout(15 * time.Second).WaitLoad(); err != nil {
+			fmt.Printf("DEBUG: Login page load timeout: %v\n", err)
+		}
+
+		time.Sleep(2 * time.Second)
+
+		// Login Logic
+		inlineForm, err := page.Timeout(2 * time.Second).Element("#frm-homepageLoginForm-loginForm")
+		if err == nil {
+			fmt.Println("DEBUG: Found inline login form. Filling...")
+			inlineForm.MustElement(`input[name="email"]`).Input(email)
+			inlineForm.MustElement(`input[name="password"]`).Input(password)
+			go func() {
+				inlineForm.MustElement(`button[name="login"]`).Click(proto.InputMouseButtonLeft, 1)
+			}()
+			page.Timeout(10 * time.Second).WaitLoad()
+			fmt.Println("DEBUG: Login submitted via inline form.")
+		} else {
+			fmt.Println("DEBUG: Inline form not found, checking for login button...")
+			loginBtn, err := page.Timeout(2 * time.Second).Element(`[data-dialog-open="login"]`)
+			if err == nil {
+				fmt.Println("DEBUG: Login button found. Clicking...")
+				loginBtn.MustClick()
+				fmt.Println("DEBUG: Waiting for modal form...")
+				if err := page.Timeout(5*time.Second).WaitElementsMoreThan("#frm-loginDialog-login-loginForm", 0); err != nil {
+					fmt.Printf("DEBUG: Login modal did not appear: %v\n", err)
+				} else {
+					fmt.Println("DEBUG: Modal appeared. Filling...")
+					page.MustElement(`#frm-loginDialog-login-loginForm input[name="email"]`).Input(email)
+					page.MustElement(`#frm-loginDialog-login-loginForm input[name="password"]`).Input(password)
+					fmt.Println("DEBUG: Submitting modal form...")
+					wait := page.MustWaitNavigation()
+					page.MustElement(`#frm-loginDialog-login-loginForm button[name="login"]`).MustClick()
+					wait()
+					fmt.Println("DEBUG: Login submitted via modal.")
+				}
+			} else {
+				fmt.Println("DEBUG: Login button not found. Assuming already logged in or layout changed.")
+			}
+		}
+	}
+}
+
 // PrehrajResult represents a search result from Prehraj.to
 type PrehrajResult struct {
 	Title    string
@@ -30,147 +99,21 @@ type PrehrajResult struct {
 func searchPrehraj(query string) ([]PrehrajResult, error) {
 	searchURL := fmt.Sprintf("https://prehraj.to/hledej/%s", url.PathEscape(query))
 
-	// Launch headless browser
-	// We use a custom launcher to ensure it finds chromium in Alpine
-	u := launcher.New().Bin("/usr/bin/chromium-browser").MustLaunch()
-	browser := rod.New().ControlURL(u).MustConnect()
-	defer browser.MustClose()
+	if rodBrowser == nil {
+		InitBrowser()
+	}
 
-	// 1. LOGIN FLOW (If credentials provided)
-
-	email := os.Getenv("PREHRAJ_EMAIL")
-
-	password := os.Getenv("PREHRAJ_PASSWORD")
-
-	page := browser.MustPage("https://prehraj.to/")
+	page := rodBrowser.MustPage(searchURL)
+	defer page.Close()
 
 	// Set User-Agent
-
 	page.MustSetUserAgent(&proto.NetworkSetUserAgentOverride{
-
 		UserAgent: "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36",
 	})
 
-	// Wait for load with timeout
-
-	err := page.Timeout(15 * time.Second).WaitLoad()
-
-	if err != nil {
-
-		fmt.Printf("DEBUG: Initial page load timeout: %v\n", err)
-
-	}
-
-	if email != "" && password != "" {
-
-		fmt.Println("DEBUG: Attempting to login...")
-
-		// Wait for page to be ready
-
-		time.Sleep(2 * time.Second)
-
-		// Strategy 1: Check for Inline Login Form
-
-		// Use Race to check for multiple possible login indicators
-
-		// We want to avoid waiting if elements aren't there
-
-		// Attempt to find inline form with timeout
-
-		inlineForm, err := page.Timeout(2 * time.Second).Element("#frm-homepageLoginForm-loginForm")
-
-		if err == nil {
-
-			fmt.Println("DEBUG: Found inline login form. Filling...")
-
-			// Fill inline form
-
-			if err := inlineForm.MustElement(`input[name="email"]`).Input(email); err != nil {
-
-				fmt.Printf("DEBUG: Error filling email: %v\n", err)
-
-			}
-
-			inlineForm.MustElement(`input[name="password"]`).Input(password)
-
-			// Click submit and wait
-
-			go func() {
-
-				// Click might cause navigation, so we handle it gracefully
-
-				inlineForm.MustElement(`button[name="login"]`).Click(proto.InputMouseButtonLeft, 1)
-
-			}()
-
-			// Wait for navigation or stable
-
-			page.Timeout(10 * time.Second).WaitLoad()
-
-			fmt.Println("DEBUG: Login submitted via inline form.")
-
-		} else {
-
-			// Strategy 2: Modal
-
-			fmt.Println("DEBUG: Inline form not found, checking for login button...")
-
-			loginBtn, err := page.Timeout(2 * time.Second).Element(`[data-dialog-open="login"]`)
-
-			if err == nil {
-
-				fmt.Println("DEBUG: Login button found. Clicking...")
-
-				loginBtn.MustClick()
-
-				// Wait for modal form
-
-				fmt.Println("DEBUG: Waiting for modal form...")
-
-				err := page.Timeout(5*time.Second).WaitElementsMoreThan("#frm-loginDialog-login-loginForm", 0)
-
-				if err != nil {
-
-					fmt.Printf("DEBUG: Login modal did not appear: %v\n", err)
-
-				} else {
-
-					fmt.Println("DEBUG: Modal appeared. Filling...")
-
-					page.MustElement(`#frm-loginDialog-login-loginForm input[name="email"]`).Input(email)
-
-					page.MustElement(`#frm-loginDialog-login-loginForm input[name="password"]`).Input(password)
-
-					fmt.Println("DEBUG: Submitting modal form...")
-
-					// Click and wait
-
-					wait := page.MustWaitNavigation()
-
-					page.MustElement(`#frm-loginDialog-login-loginForm button[name="login"]`).MustClick()
-
-					wait()
-
-					fmt.Println("DEBUG: Login submitted via modal.")
-
-				}
-
-			} else {
-
-				fmt.Println("DEBUG: Login button not found. Assuming already logged in or layout changed.")
-
-			}
-
-		}
-
-	}
-
 	// 2. SEARCH
-
 	fmt.Printf("DEBUG: Navigating to search: %s\n", searchURL)
-
-	page.MustNavigate(searchURL)
-
+	// Page already navigated by MustPage, but checking load
 	page.Timeout(15 * time.Second).WaitLoad()
 
 	// Additional small sleep to let any lazy loading finish
@@ -223,13 +166,6 @@ func searchPrehraj(query string) ([]PrehrajResult, error) {
 	if len(results) == 0 {
 		pageTitle := doc.Find("title").Text()
 		fmt.Printf("DEBUG: No results found for query '%s'. Page Title: '%s'. Body len: %d\n", query, pageTitle, len(html))
-
-		// Debug snippet
-		snippet := html
-		if len(snippet) > 20000 {
-			snippet = snippet[:20000]
-		}
-		fmt.Printf("DEBUG HTML Snippet: %s\n", snippet)
 	}
 
 	return results, nil
@@ -291,27 +227,28 @@ func parseLink(s *goquery.Selection, href string, results *[]PrehrajResult) {
 }
 
 func extractPrehrajStreams(videoPageURL string) ([]Stream, error) {
-	req, err := http.NewRequest("GET", videoPageURL, nil)
+	if rodBrowser == nil {
+		InitBrowser()
+	}
+
+	page := rodBrowser.MustPage(videoPageURL)
+	defer page.Close()
+
+	page.MustSetUserAgent(&proto.NetworkSetUserAgentOverride{
+		UserAgent: "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36",
+	})
+
+	if err := page.Timeout(15 * time.Second).WaitLoad(); err != nil {
+		fmt.Printf("DEBUG: Timeout loading video page %s: %v\n", videoPageURL, err)
+	}
+
+	// Small delay to ensure scripts run
+	time.Sleep(1 * time.Second)
+
+	bodyString, err := page.HTML()
 	if err != nil {
 		return nil, err
 	}
-	req.Header.Set("User-Agent", "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
-
-	resp, err := httpClient.Do(req)
-	if err != nil {
-		return nil, err
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("Prehraj.to details returned status: %s", resp.Status)
-	}
-
-	bodyBytes, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return nil, err
-	}
-	bodyString := string(bodyBytes)
 
 	// Regex to find "var sources = [...]"
 	re := regexp.MustCompile(`var sources = (\[[\s\S]*?\]);`)
@@ -333,24 +270,6 @@ func extractPrehrajStreams(videoPageURL string) ([]Stream, error) {
 			}
 		})
 	}
-
-	// Try to find Download Link
-	/* downloadURL := ""
-	if err == nil {
-		doc.Find("a").Each(func(i int, s *goquery.Selection) {
-			href, exists := s.Attr("href")
-			if exists && strings.Contains(href, "do=download") {
-				if !strings.HasPrefix(href, "http") {
-					// Handle relative URL if necessary, though typical links are absolute or root-relative
-					if strings.HasPrefix(href, "/") {
-						u, _ := url.Parse(videoPageURL)
-						href = u.Scheme + "://" + u.Host + href
-					}
-				}
-				downloadURL = href
-			}
-		})
-	} */
 
 	var streams []Stream
 
@@ -390,18 +309,6 @@ func extractPrehrajStreams(videoPageURL string) ([]Stream, error) {
 		}
 	}
 
-	// Add Download Link as a fallback/source stream if available
-	// Note: It might require cookies or redirect, but Stremio can sometimes handle it.
-	// Giving it a high probability label if no streams found, or just adding it.
-	/*
-		   Disable Download link for now as it redirects to page for non-logged users and fails in Stremio.
-		if downloadURL != "" && realResolution != "" {
-			streams = append(streams, Stream{
-				Name:  fmt.Sprintf("Prehraj.to Source (%s)", realResolution),
-				Title: "Original Source",
-				URL:   downloadURL,
-			})
-		} else */
 	if len(streams) == 0 {
 		return nil, fmt.Errorf("no sources found in script")
 	}

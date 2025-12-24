@@ -245,6 +245,7 @@ func loadEnv() {
 
 func main() {
 	loadEnv()
+	InitBrowser()
 	Config.TMDBApiKey = os.Getenv("TMDB_API_KEY")
 	if Config.TMDBApiKey == "" {
 		log.Println("Warning: TMDB_API_KEY environment variable not set. Catalog will fail.")
