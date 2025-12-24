@@ -29,12 +29,15 @@ func searchPrehraj(query string) ([]PrehrajResult, error) {
 		return nil, err
 	}
 	// Mimic full browser headers
-	req.Header.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
-	req.Header.Set("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8")
-	req.Header.Set("Accept-Language", "cs-CZ,cs;q=0.9,en;q=0.8")
+	req.Header.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36")
+	req.Header.Set("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7")
+	req.Header.Set("Accept-Language", "cs-CZ,cs;q=0.9,en-US;q=0.8,en;q=0.7")
 	req.Header.Set("Referer", "https://prehraj.to/")
 	req.Header.Set("Connection", "keep-alive")
 	req.Header.Set("Upgrade-Insecure-Requests", "1")
+	req.Header.Set("Sec-Ch-Ua", `"Google Chrome";v="123", "Not:A-Brand";v="8", "Chromium";v="123"`)
+	req.Header.Set("Sec-Ch-Ua-Mobile", "?0")
+	req.Header.Set("Sec-Ch-Ua-Platform", `"Windows"`)
 	req.Header.Set("Sec-Fetch-Dest", "document")
 	req.Header.Set("Sec-Fetch-Mode", "navigate")
 	req.Header.Set("Sec-Fetch-Site", "same-origin")
@@ -84,23 +87,9 @@ func searchPrehraj(query string) ([]PrehrajResult, error) {
 				duration = f
 			} else if strings.Contains(f, "MB") || strings.Contains(f, "GB") || strings.Contains(f, "kB") {
 				size = f
-			} else {
-				// Try to construct title
-				// Usually size and duration are at the start or end, but "text" is just a blob.
-				// Let's rely on the structure: Time Size Title
-				// The snapshot showed: "00:09:56 885.65 MB Big_Buck_Bunny_1080p"
-				// So it seems ordered.
 			}
 		}
 
-		// Alternative parsing:
-		// The title is usually the main text.
-		// Let's grab specific elements if possible.
-		// The HTML snippet in evaluation showed:
-		// text: "00:09:56\n885.65 MB\nBig_Buck_Bunny_1080p"
-		// If goquery preserves order, we can split by newline or just use the full text.
-
-		// Let's use the raw text from the selection which includes children text.
 		fullText := s.Text()
 		lines := strings.Split(fullText, "\n")
 
@@ -132,10 +121,12 @@ func searchPrehraj(query string) ([]PrehrajResult, error) {
 	})
 
 	if len(results) == 0 {
-		fmt.Printf("DEBUG: No results found for query '%s'. Body len: %d\n", query, len(bodyBytes))
+		pageTitle := doc.Find("title").Text()
+		fmt.Printf("DEBUG: No results found for query '%s'. Page Title: '%s'. Body len: %d\n", query, pageTitle, len(bodyBytes))
+
 		snippet := string(bodyBytes)
-		if len(snippet) > 500 {
-			snippet = snippet[:500]
+		if len(snippet) > 1000 {
+			snippet = snippet[:1000]
 		}
 		fmt.Printf("DEBUG HTML Snippet: %s\n", snippet)
 	}
